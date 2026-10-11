@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.venv/
+venv/
+.coverage
+htmlcov/
+
+# 分析产物
+*.result.json
+output/
+results/
+
+# 日志
+logs/
+*.log
+
+# AI 配置：这里会填真实 Key，不能进仓库（模板见 config/llm.example.json）
+config/llm.json
+jsatlas.config.json
+
+.idea/workspace.xml
+.DS_Store

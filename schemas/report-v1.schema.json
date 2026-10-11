@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jsatlas.local/schemas/report-v1.schema.json",
+  "title": "JSAtlas Report v1",
+  "description": "JSAtlas 对外唯一输出形态：一份可直接消费的 API 清单与密钥清单。每项都带 source（来源 URL 或文件路径），便于在多资源合并后回溯出处。",
+  "type": "object",
+  "required": ["apis", "secrets"],
+  "additionalProperties": false,
+  "properties": {
+    "apis": {
+      "type": "array",
+      "description": "从 JavaScript 中提取出的可请求接口及其参数。",
+      "items": { "$ref": "#/definitions/api" }
+    },
+    "secrets": {
+      "type": "array",
+      "description": "JScanner2 密钥计算方法判定出的敏感信息。",
+      "items": { "$ref": "#/definitions/secret" }
+    }
+  },
+  "definitions": {
+    "api": {
+      "type": "object",
+      "required": ["path", "method", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "请求路径或完整 URL。"
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP 方法，大写。未能从代码确定时为空字符串，不做猜测。"
+        },
+        "params": {
+          "type": "object",
+          "description": "参数名到字面量默认值的映射。值无法确定（变量、成员表达式、调用）时为空字符串。**该字段缺失是有意义的：表示未提取到参数，不等于该接口确认无参数**——下游应视为“参数未知”，不要当成可以直接无参请求。常见成因：调用是 `data: t` / `params: t` 这类整包传参，参数名藏在上游组件里，需要 AI 阶段（Level 2/3）才能读出来。",
+          "additionalProperties": { "type": "string" }
+        },
+        "source": {
+          "type": "string",
+          "description": "该接口的出处：远程 URL、本地文件路径，纯文本输入时为空字符串。"
+        }
+      }
+    },
+    "secret": {
+      "type": "object",
+      "required": ["value", "type", "risk_level", "test_suggestion", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "description": "命中的原始字符串。"
+        },
+        "type": {
+          "type": "string",
+          "description": "细分类型。取自 JScanner2 的方法：private_key / jdbc_uri / webhook / hardcoded_password / id_card / private_ip / sensitive_endpoint / sourcemap / phone / email 为正则命中；high_entropy_value 为统计打分命中。",
+          "enum": [
+            "private_key",
+            "jdbc_uri",
+            "webhook",
+            "hardcoded_password",
+            "id_card",
+            "private_ip",
+            "sensitive_endpoint",
+            "sourcemap",
+            "phone",
+            "email",
+            "high_entropy_value"
+          ]
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": ["High", "Medium", "Low"],
+          "description": "处置优先级。High=可直接造成损失，建议优先验证；Medium=需结合可达性判断；Low=参考信息。"
+        },
+        "test_suggestion": {
+          "type": "string",
+          "description": "给测试人员的下一步行动建议。是确定性模板文案，不是漏洞结论。"
+        },
+        "source": {
+          "type": "string",
+          "description": "该条命中的出处：远程 URL、本地文件路径，纯文本输入时为空字符串。"
+        }
+      }
+    }
+  }
+}

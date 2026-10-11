@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jsatlas"
+version = "0.1.0"
+description = "JavaScript Security Intelligence Engine — 从 JS 源码提取攻击面、参数与安全情报"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "JSAtlas" }]
+keywords = ["security", "javascript", "static-analysis", "attack-surface", "secret-detection"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+# 与上游一致的核心依赖：这两个在上游也是模块级 import，缺了搬过来的模块就加载不了
+dependencies = [
+    "tree-sitter>=0.24",
+    "tree-sitter-javascript>=0.23",
+    # JS 格式化：超过 3500 字符的压缩行必须先展开才能进入行切片
+    "jsbeautifier>=1.15",
+    # 大模型返回的容错 JSON 解析（上游 params_scan / ai_client 均依赖）
+    "json_repair>=0.30",
+    # AI 是默认能力（密钥 LLM 复核 / 参数 Level 2-3），不是可选开关。
+    # 未安装时由 llm/openai_compat.py 兜底并告警，不会 import 即崩
+    "openai>=1.0",
+]
+
+[project.optional-dependencies]
+# 统计学敏感信息评分的词典来源；缺失时自动退回内置词表，不影响运行
+nltk = ["nltk>=3.8"]
+# wordninja 用于把无分隔符的随机串切成词，提升 P 特征精度
+wordninja = ["wordninja>=2.0"]
+# JSON Schema 严格校验；缺失时自动退回内置结构校验
+schema = ["jsonschema>=4.0"]
+# 远程 URL 输入。缺失时自动退回标准库 urllib，URL 入口仍然可用
+remote = ["requests>=2.28"]
+# AI 已并入核心依赖，此 extra 只为兼容旧的安装命令保留
+ai = ["openai>=1.0"]
+dev = [
+    "pytest>=7.0",
+    "jsonschema>=4.0",
+    "openai>=1.0",
+    "nltk>=3.8",
+    "wordninja>=2.0",
+    "requests>=2.28",
+    "jsbeautifier>=1.15",
+    "json_repair>=0.30",
+]
+
+[project.scripts]
+jsatlas = "jsatlas.cli:main"
+
+[tool.setuptools.packages.find]
+where = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.setuptools.package-data]
+jsatlas = ["py.typed"]
