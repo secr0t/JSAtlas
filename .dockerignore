@@ -1,0 +1,18 @@
+# 版本控制与 IDE
+.git
+.gitignore
+.idea
+
+# 测试与文档（不进运行镜像）
+.pytest_cache
+tests
+docs
+examples
+
+# 本地产物
+result.json
+*.pyc
+__pycache__
+
+# 真实密钥配置绝不进镜像；LLM 配置用环境变量或运行时挂载传入
+config/llm.json
