@@ -4,9 +4,31 @@
 **可请求的接口清单**和**可疑密钥清单**挖出来，用一份干净的 JSON 交给你。
 
 上游项目：JScanner2。JSAtlas 不是对它的改名或复制，而是把其中经过验证的
-分析能力重组为独立、可复用、可单测的基础能力。密钥判定方法严格沿用 JScanner2。
+分析能力重组为独立、可复用、可单测的基础能力。密钥与参数判定方法严格沿用 JScanner2。
 
 > JSAtlas 输出的是**安全情报和分析依据**，不是未经验证的漏洞结论。
+
+---
+
+## 它能干什么
+
+给一段 JavaScript（本地文件、远程 URL 或一段文本），产出一句话就能说清的结果：
+
+| 产出 | 内容 | 判定方法 |
+| --- | --- | --- |
+| `apis` | 请求路径、HTTP 方法、参数名与字面量默认值、出处 | AST 字符串字面量提取 + 上下文恢复 + 参数链路（确定性 + AI） |
+| `secrets` | 可疑密钥串、类型、风险等级、测试建议 | 熵/分词统计打分 + AST 上下文 + LLM 复核（JScanner2 `-asia` 全链路） |
+
+**为什么用它（优势）：**
+
+* **判定能力经过验证**：参数识别、密钥打分、上下文恢复全部**逐字迁移**自上游生产实现，
+  `tests/unit/test_upstream_parity.py` 剥掉 import 后与上游逐字节比对，任何改动都会被测试拦下；
+* **确定性可复现**：同一份输入跑两次，输出**逐字节相同**，可以做 diff、可以做回归基线；
+* **无源码上限**：不对源码设任何字符/字节上限，多大 bundle 都完整跑 —— 跳过的代价是漏报；
+* **AI 是默认能力，不是门槛**：没配 Key 时全链路照跑，降级为确定性结果并明确标注
+  `ai_verified=False`，绝不把猜测伪装成模型结论；
+* **输出契约极简且稳定**：永远只有 `{"apis": [...], "secrets": [...]}` 两个顶层键，
+  有正式 JSON Schema（`schemas/report-v1.schema.json`），对人和对程序都好接。
 
 ---
 
@@ -16,7 +38,7 @@
 pip install -e .
 ```
 
-核心依赖 `tree-sitter`、`tree-sitter-javascript`、`jsbeautifier`、`json_repair`
+核心依赖 `tree-sitter`、`tree-sitter-javascript`、`jsbeautifier`、`json_repair`、`openai`
 在上游同样是硬依赖，缺失会导致搬过来的模块无法加载，因此放在 `dependencies` 里。
 
 可选依赖（缺了也能跑，只是能力降级）：
@@ -27,11 +49,46 @@ pip install jsonschema          # 严格的 JSON Schema 校验，缺失时退回
 pip install requests            # 远程 URL 输入，缺失时自动退回标准库 urllib
 ```
 
-`openai` 在**核心依赖**里 —— AI 是默认能力，不是可选开关。环境缺包时也不会
-import 即崩：`llm/openai_compat.py` 会兜底，CLI 启动时打印告警，AI 阶段降级为
-确定性结果（见下）。
-
 需要 Python ≥ 3.9。
+
+---
+
+## 配置
+
+唯一需要配置的是大模型（不配也能跑，AI 阶段降级，见下）。
+
+### 方式一：环境变量（推荐，优先级最高）
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `JSATLAS_LLM_API_KEY` | 模型网关的 API Key | 无 |
+| `JSATLAS_LLM_BASE_URL` | OpenAI 兼容网关地址 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `JSATLAS_LLM_MODELS` | 逗号分隔的模型名列表 | 走配置文件 |
+| `JSATLAS_LLM_TIMEOUT` | 单次请求超时秒数 | 30 |
+| `JSATLAS_LLM_CONFIG` | 指定配置文件路径 | 按下方查找顺序 |
+
+```bash
+export JSATLAS_LLM_API_KEY=sk-xxx
+python -m jsatlas app.js
+```
+
+### 方式二：配置文件
+
+复制 `config/llm.example.json` 为 `config/llm.json` 并填入 `api_key`。
+文件查找顺序（先命中先用）：
+
+1. `JSATLAS_CONFIG` 环境变量指向的文件
+2. 当前目录的 `jsatlas.config.json`
+3. `~/.jsatlas/config.json`
+4. 项目根的 `config/llm.json`
+
+> ⚠️ `config/llm.json` 已在 `.gitignore` 里，不要把真实 Key 提交进仓库。
+
+### 没配模型会怎样
+
+不会崩、不会跳过链路：密钥与参数链路照常跑完确定性部分，
+LLM 复核 / 参数 Level 2-3 降级为兜底结果，输出里带 `ai_verified=False` 标注。
+这是兜底，不是开关。
 
 ---
 
@@ -43,13 +100,17 @@ import 即崩：`llm/openai_compat.py` 会兜底，CLI 启动时打印告警，A
 # 分析一个文件，输出 JSON 到 stdout
 python -m jsatlas path/to/app.js
 
-# 写到文件
+# 写到文件（安装后也可用 jsatlas 命令）
 python -m jsatlas path/to/app.js -o result.json
 
-# 只跑某一个分析器
+# 任务级运行模式（见下一节）
+python -m jsatlas app.js --mode api
+python -m jsatlas app.js --mode secret
+
+# 只跑指定分析器（比 --mode 更精确，优先于 --mode）
 python -m jsatlas app.js --analyzers surface.path_candidates
 
-# 输出前校验
+# 输出前做结构 / Schema 校验，失败则退出码非 0
 python -m jsatlas app.js --validate
 
 # 看看有哪些分析器
@@ -75,6 +136,24 @@ python -m jsatlas https://internal/app.js --insecure
 获取参数：`--timeout`（读取超时，默认 20s）、`--max-bytes`（默认不限）、
 `--header`（可重复）、`--insecure`、`--workers`（默认 4）。
 
+### 运行模式（`--mode`）
+
+给自动化调用方（Agent / 脚本）准备的任务级开关：
+
+| 模式 | 跑什么 | 适用场景 |
+| --- | --- | --- |
+| `all`（默认） | API 链路 + 密钥链路 | 完整情报收集 |
+| `api` | surface + parameters + context 共 5 个分析器 | 只要接口清单 |
+| `secret` | 仅 `intelligence.upstream_secret` | 只要密钥；跳过整条 AST 上下文恢复，最快 |
+
+**无论哪种模式，输出形态都不变** —— 永远 `{"apis": [...], "secrets": [...]}`
+两键，不相关的一侧为空列表。调用方不需要按模式改解析逻辑。
+
+```bash
+python -m jsatlas app.js --mode api      # {"apis": [...], "secrets": []}
+python -m jsatlas app.js --mode secret   # {"apis": [], "secrets": [...]}
+```
+
 ### Python
 
 ```python
@@ -99,52 +178,6 @@ python examples/url_demo.py     # 或 IDE 里右键 Run
 
 它会起一个本地 HTTP 服务，用 URL 喂给 JSAtlas，把输入源码和
 输出的 `apis` / `secrets` 完整打印出来。不需要外网。
-
----
-
-## 远程获取的边界
-
-* 只对**你显式给出的 URL** 发起一次 GET。分析过程中提取出的 API 不会被请求。
-* 单个 URL 拿不到 → 抛 `FetchError` / CLI 退出码 2，不返回"看起来什么都没有"的空结果。
-* 批量时容错：失败的那个不产出结果，成功的照常（退出码 1）。
-* 默认校验 TLS 证书，连接 5s / 读取 20s 超时。
-* **默认不限字节数**。要自我保护时用 `--max-bytes`，但注意截断会丢掉尾部线索。
-* 本模块不做 SSRF 防护 —— 对不可信 URL 请自行评估。
-
-### 关于体积与耗时
-
-JSAtlas **不对源码设任何字符/字节上限**：JScanner2 密钥全链路、
-参数 Orchestration、上下文恢复，多大都完整跑。理由很直接——跳过的代价是整段
-源码的线索全部丢失，那是漏报，不是优化。
-
-代价是几个 MB 的 bundle 会明显变慢（主要是格式化与 AST 上下文提取）。
-真要卡耗时，用这些显式开关自己设，默认一律不限：
-
-| 开关 | 默认 | 作用 |
-| --- | --- | --- |
-| `--max-bytes` | 不限 | 远程资源字节上限 |
-| `--max-context-targets` | 0 = 不限 | 上下文恢复最多处理多少个 API |
-| `AnalysisOptions.max_context_bytes` | 5000 | 单个 surface 的上下文字节上限（切片大小，不是源码大小） |
-
-去掉上限后，2.7MB / 6 万行的真实 webpack 产物会从"三条链路直接跳过"变成"全部跑完"，
-耗时从毫秒级升到分钟级 —— 慢下来的主要是上下文恢复。这是拿时间换召回，
-要卡耗时就用上表的开关。
-
-#### 上下文恢复的缓存优化（B-17）
-
-上下文恢复原本对每个 identifier 都重建作用域链、把整棵子树重扫一遍
-（见 `migration-map.md` K-04）。现在对 `_collect_decls_in_subtree` 做了记忆化：
-
-```
-120 个 API 样本（2.96MB 文件）
-  关缓存   15.9s   递归调用 27,035,270
-  开缓存    1.4s   递归调用     26,409      11.0 倍，结果逐条一致
-```
-
-做法是纯函数记忆化而非改写算法：原函数逐字保留为 `_collect_decls_in_subtree_uncached`，
-新函数只做查表，判定逻辑一行未改；缓存用 `threading.local()`，每次调用入口建、出口清
-（`node.id` 是指针地址，跨调用复用会静默命中到另一棵树的节点）。**这是 JSAtlas 第一处偏离上游的
-算法层改动**，理由、实测与等价性证明见 `docs/perf-scope-cache.md`。
 
 ---
 
@@ -179,10 +212,23 @@ JSAtlas **不对源码设任何字符/字节上限**：JScanner2 密钥全链路
 | 字段 | 含义 | 取不到时 |
 | --- | --- | --- |
 | `path` | 请求路径或完整 URL | 不会为空，否则不输出 |
-| `method` | HTTP 方法，大写 | 空字符串。不猜成 GET |
+| `method` | HTTP 方法，大写 | **空字符串**。不猜成 GET |
 | `params` | 参数名 → 字面量默认值 | **整个键不写**，见下方说明 |
 | `source` | 出处，URL 或本地路径 | 纯文本输入为空字符串 |
-| `secrets[].type` | 细分类型 | 见下表 |
+| `secrets[].type` | 细分类型，见下表 | — |
+| `secrets[].risk_level` | High / Medium / Low，按此排序输出 | — |
+| `secrets[].test_suggestion` | 给测试人员的下一步建议（确定性文案，非 AI 生成） | — |
+
+排序保证：`apis` 按 `(path, method)` 排序；`secrets` 按 High → Medium → Low 排序。
+下游从第一条开始顺序处理即可。
+
+### 哪些东西永远不会出现在 `apis` 里
+
+* **绝对 URL**（`http(s)://`、协议相对 `//`）：本站接口在 bundle 中均为相对路径，
+  绝对 URL 多为外站导航 / 页面链接，对齐上游 JScanner2 送 AI 前的闸门，一律不产出；
+* **静态资源后缀**（`.css` `.png` `.jpg` `.svg` `.ico` `.woff` `.mp4` `.map` 等）；
+* **baseURL 写入点**：`axios.defaults.baseURL = "..."` 是配置前缀，不是可请求接口，
+  由 `surface.base_url` 单独提取，不进 `apis`。
 
 ### `params` 缺失意味着什么（重要）
 
@@ -197,16 +243,12 @@ const t = JSON.parse(JSON.stringify(r));
 return request({ url: "/acc/repair/deduct/err/list", method: "post", data: t })
 ```
 
-参数名藏在 Vue 组件的 `data()` 里，`t` 是运行时才有的对象。确定性 ast 解不开这种，
+参数名藏在 Vue 组件的 `data()` 里，`t` 是运行时才有的对象。确定性 AST 解不开这种，
 上游 JScanner2 靠 AI 阶段（Level 2/3）读出来——**所以没配 Key、AI 阶段没跑的时候，
 这类接口就一定没有 `params` 键**。实测 `app.8bc848d6.js`：2932 个接口里 2917 个没有。
 
 下游处理建议：把缺 `params` 当作「参数未知，需要回去看源码」，不要当作「可以直接无参请求」。
-参数值确实时，值仍是空字符串。
-
-`method` 同理保留为空字符串表示「未能确定」，不猜成 GET。
-| `risk_level` | High / Medium / Low，按此排序输出 | — |
-| `test_suggestion` | 给测试人员的下一步建议（确定性文案，非 AI 生成） | — |
+参数值不确定时，值仍是空字符串。
 
 `secrets[].type` 的取值：
 
@@ -220,8 +262,7 @@ return request({ url: "/acc/repair/deduct/err/list", method: "post", data: t })
 > 敏感端点 / SourceMap / 硬编码口令）曾逐字迁移进本项目，在真实 bundle 上
 > 43 条命中**全部是误报**：命中的是语言包里的界面文案
 > （`password: "Login password"`、`pleaseInputOldPwd: "请输入旧密码"`），
-> 甚至把 `oldPwdLabel: "Old password:"` 的**闭合引号**当成密码值的起始引号，
-> 输出 `,\n confirmChange:` 这样的源码片段。
+> 甚至把 `oldPwdLabel: "Old password:"` 的**闭合引号**当成密码值的起始引号。
 > secrets 现在只有计算式来源：行切片 → 熵/分词打分 → AST 上下文 → LLM 复核。
 > 代价：手机号、邮箱、内网 IP、JDBC、私钥这类**结构化**凭证不再由 JSAtlas 判定
 > （除非它们同时是高熵串并被打分命中）。
@@ -235,28 +276,144 @@ return request({ url: "/acc/repair/deduct/err/list", method: "post", data: t })
 | 根本没候选 | 统计里 `candidates: 0` —— 打分没过阈值，这条链路认为源码里没有可疑串 |
 | **有候选、全被 LLM 否掉** | `candidates: N, kept: 0, ai_used: true` —— 打分觉得可疑，模型读完上下文判它们不是密钥 |
 
-规模写在 `statistics.analyzers["intelligence.upstream_secret"]` 里：
+规模写在**内部结果对象**的 `result.statistics.analyzers["intelligence.upstream_secret"]` 里
+（CLI 的 JSON 输出不包含统计块；项目根 `main.py` 会把这行打印出来）：
 
 ```json
 {"status": "ok", "candidates": 8, "kept": 0, "ai_used": true}
 ```
 
-`main.py` 会把这一行直接打印出来。真实 bundle 上常见第二种：候选是
-`leniu-icon-kucunpandian`（图标名）、`DEL_ALL_VISITED_VIEWS`（Vuex mutation 名）、
-`apiGetNewCangku`（API 函数名）、`ABCDEFGHJKMNPQRSTWXYZ...`（验证码字符集）这类
+真实 bundle 上常见第二种：候选是 `leniu-icon-kucunpandian`（图标名）、
+`DEL_ALL_VISITED_VIEWS`（Vuex mutation 名）、`apiGetNewCangku`（API 函数名）这类
 **高熵但不是秘密**的标识符 —— 打分只看形态，模型看语义，否掉它们正是复核阶段该干的活。
 
 > ⚠️ 注意：候选超过 50 条时（上游 `max_ast_analysis`），只有排序靠前的 50 条
 > 会进入复核，**其余直接丢弃**而不是降级返回。这是上游的裁剪顺序，未改动。
 
 多个目标时，结果合并进同一份清单，靠 `source` 区分出处。
-正式校验规则见 `schemas/report-v1.schema.json`。
+正式校验规则见 `schemas/report-v1.schema.json`，也可用 `--validate` 或
+`jsatlas.api.validate()` 现场校验。
 
 内部模型（surface / point / intelligence / relationship / evidence）依然存在，
 用于支撑上下文恢复与回归调试，但不再对外输出 ——
-`outputs/report.py` 是唯一承诺给别人看的东西。
+`output/report.py` 是唯一承诺给别人看的东西。
 
 **同一份输入跑两次，输出逐字节相同。**
+
+---
+
+## 给 AI Agent 的使用指南
+
+本节是为自动化调用方（AI Agent / 脚本 / 编排器）写的机器可读契约。
+按下面的规则消费输出，不需要读源码。
+
+### 调用方式
+
+```bash
+# 最小调用：stdout 拿 JSON
+python -m jsatlas <file-or-url...> [--mode api|secret|all] [--validate] [-o out.json]
+```
+
+* **stdout 只有 JSON**；日志、警告、错误全部走 stderr。解析时只读 stdout。
+* 多个目标（文件 / URL 可混用）合并成一份清单，靠每条的 `source` 字段区分出处。
+* 单个目标失败 → 退出码 2，stderr 有原因，**不会有**"看起来什么都没有"的空结果；
+  批量时容错：失败资源不产出，成功照常，退出码 1。
+
+### 退出码
+
+| 退出码 | 含义 | 下一步动作 |
+| --- | --- | --- |
+| `0` | 成功 | 解析 stdout |
+| `1` | 批量模式下部分资源失败，或 `--validate` 校验失败 | 看 stderr；成功资源的结果仍然有效 |
+| `2` | 用法错误 / 单个目标获取失败 / 目标为空 | 看 stderr，修正入参后重试 |
+
+### 输出契约不变式（始终成立）
+
+1. 顶层**永远**恰好两个键：`apis`、`secrets`。`--mode` 只改变哪一侧有内容，
+   空的一侧是 `[]` 而不是缺键 —— 不用按模式写两套解析。
+2. `apis` 内元素键序固定为 `path, method, params?, source`；
+   `secrets` 内为 `value, type, risk_level, test_suggestion, source`。
+3. `apis` 按 `(path, method)` 排序，`secrets` 按 `High → Medium → Low` 排序。
+4. 同一输入多次运行，输出**逐字节一致** —— 可以直接 diff 做回归对比。
+5. `apis` 里**不会**出现绝对 URL、静态资源后缀路径、baseURL 写入点（见上节）。
+6. `method: ""` 表示未能确定，不要默认当 GET 用。
+7. 缺 `params` 键 = 参数未知 ≠ 无参数。**不要**因此对接口发无参请求。
+8. `secrets[].type == "high_entropy_value"` 且 `risk_level == "Low"` 表示该条
+   **未经 AI 复核**（没配 Key 或复核失败），置信度按 Low 处理。
+9. JSON 结构可用 `schemas/report-v1.schema.json` 或 `--validate` 校验，失败即退出码 1。
+
+### 模式怎么选
+
+| 你要什么 | 用什么 | 说明 |
+| --- | --- | --- |
+| 接口清单（攻击面枚举） | `--mode api` | 跳过密钥链路 |
+| 硬编码密钥扫描 | `--mode secret` | 跳过整条 AST 上下文恢复，最快 |
+| 完整情报 | 默认（`--mode all`） | 两块都出 |
+
+需要更细的控制（比如只要攻击面、不要参数提取）时，
+用 `--analyzers <name...>` 显式点名分析器（清单见 `--list-analyzers`），
+显式名单**优先于** `--mode`。
+
+### 程序化调用（Python）
+
+```python
+from jsatlas.api import (
+    analyze_text,     # 分析源码文本
+    analyze_file,     # 分析本地文件
+    analyze_url,      # 分析远程 URL（单个失败抛 FetchError）
+    analyze_urls,     # 并发分析多个 URL（单个失败进 errors，不中断）
+    report,           # 单结果 → {"apis": [...], "secrets": [...]}
+    report_all,       # 多结果合并成一份
+    validate,         # 结构 / Schema 校验，返回 (ok, errors, mode)
+    available_analyzers,  # 列出已注册分析器
+    AnalysisOptions,  # 选项：analyzers 白名单 / enable_ai / max_context_bytes ...
+)
+```
+
+* `analyze_text(code, origin="https://x.com/app.js")` —— `origin` 会写进每条结果的
+  `source`，Agent 做多源合并时靠它归位；
+* `AnalysisOptions(analyzers=["surface.path_candidates"])` —— 等价于 CLI 的
+  `--analyzers`；`enable_ai` 默认 True，与上游一致；
+* `available_analyzers()` 返回 `[{name, description, dimension}]`，可据此动态拼名单。
+
+### JSAtlas 不会做的事（Agent 请据此设计后续动作）
+
+* **不会**对提取到的 API 发起任何请求 —— 只对你显式给出的 URL 拉取 JS 源码。
+  发包验证是下游工具的职责；
+* **不会**把结果认定为漏洞 —— 输出是情报与依据，攻击路径选择由 Agent 完成；
+* 不继承上游的扫描调度、SQLite 与报告系统 —— 一段 JS 进，一份 JSON 出。
+
+---
+
+## 性能与上限哲学
+
+### 关于体积与耗时
+
+JSAtlas **不对源码设任何字符/字节上限**：JScanner2 密钥全链路、
+参数 Orchestration、上下文恢复，多大都完整跑。理由很直接——跳过的代价是整段
+源码的线索全部丢失，那是漏报，不是优化。
+
+代价是几个 MB 的 bundle 会明显变慢（主要是格式化与 AST 上下文提取）。
+真要卡耗时，用这些显式开关自己设，默认一律不限：
+
+| 开关 | 默认 | 作用 |
+| --- | --- | --- |
+| `--max-bytes` | 不限 | 远程资源字节上限 |
+| `--max-context-targets` | 0 = 不限 | 上下文恢复最多处理多少个 API |
+| `AnalysisOptions.max_context_bytes` | 5000 | 单个 surface 的上下文字节上限（切片大小，不是源码大小） |
+
+去掉上限后，2.7MB / 6 万行的真实 webpack 产物会从"三条链路直接跳过"变成"全部跑完"，
+耗时从毫秒级升到分钟级 —— 慢下来的主要是上下文恢复。这是拿时间换召回，
+要卡耗时就用上表的开关。
+
+### 内部性能优化（判定逻辑零改动）
+
+* **上下文恢复记忆化（B-17）**：对 `_collect_decls_in_subtree` 做纯函数记忆化，
+  120 个 API 样本实测 15.9s → 1.4s（11.0 倍），结果逐条一致。
+  理由、实测与等价性证明见 `docs/perf-scope-cache.md`；
+* **参数判定复用缓存**：同结构 API（剥离路径后高度相似）的参数名判定（Level 2）
+  与参数值提取（Level 3）走两层缓存（精确等值 + 相似度匹配），重复结构只判一次；
+  差异触及参数承载键（`params/data/body/query/payload`）附近时拒绝复用，避免漏报。
 
 ---
 
@@ -264,7 +421,7 @@ return request({ url: "/acc/repair/deduct/err/list", method: "post", data: t })
 
 | name | 维度 | 说明 | 来源 |
 | --- | --- | --- | --- |
-| `surface.path_candidates` | 攻击面 | AST 字符串字面量 → API 路径 / URL，含请求方法推断 | JSAtlas 新增 |
+| `surface.path_candidates` | 攻击面 | AST 字符串字面量 → API 相对路径，含请求方法推断；绝对 URL / 静态资源不产出 | JSAtlas 新增 |
 | `surface.base_url` | 攻击面 | baseURL / apiBase 等配置写入点 | 上游迁移 |
 | `context.api_context` | 上下文 | API 所在 wrapper 函数、调用点、参数信号评分 | 上游迁移 |
 | `parameters.explicit_params` | 参数 | query 串、路径模板占位符、请求体对象键及其字面量值 | JSAtlas 新增 |
@@ -274,6 +431,9 @@ return request({ url: "/acc/repair/deduct/err/list", method: "post", data: t })
 密钥链路在上游有两条独立开关（`-asir` 正则、`-asia` 全链路），JSAtlas **只保留 `-asia`**：
 正则那条在真实 bundle 上 43 条命中全是误报，已整体移除（见上）。
 判定逻辑与上游一致，JSAtlas 只在命中之后补类型、风险等级与建议文案。
+
+`--mode` 与这些维度的对应关系：`api` = surface + parameters + context，
+`secret` = intelligence，`all` = 全部。
 
 ### 已经原样搬过来的 JScanner2 模块
 
@@ -292,22 +452,6 @@ return request({ url: "/acc/repair/deduct/err/list", method: "post", data: t })
 | `config/scanner_rules.py` | `parsing/scanner_rules.py` | 黑名单与关键词规则集 |
 | `infra/utils.py:remove_html_tags` | `utils/html.py` | HTML 包裹内容剥离 |
 | `request_executor._parse_params_string` | `utils/params_string.py` | 参数串 → 字典 |
-
-### AI 怎么用
-
-AI 对应上游 `-asia` 那条产线，**默认开启**，没有开关：
-
-```bash
-export JSATLAS_LLM_API_KEY=sk-xxx
-python -m jsatlas app.js
-```
-
-默认就会走参数 Level 2/3 与密钥 LLM 复核。只有取不到模型（没配 Key 或缺 SDK）
-时才会降级：链路照跑，结果带 `ai_verified=False` / `ai_analyzed=False`，
-不会被当成模型已确认的结论 —— 这是兜底，不是开关。
-
-`param_pre_filter`（要不要送 AI 的省钱闸门）与 `line_prefilter` 也已迁移，
-上游同样是 `-asia` 打开后才生效。
 
 ### 去重策略
 
@@ -351,6 +495,8 @@ JSATLAS_BIG_SAMPLE=/path/to/app.js python tests/regression/parity_with_upstream.
 | [`PROJECT_SPEC.md`](PROJECT_SPEC.md) | 项目说明书（目标、边界、架构、阶段、验收标准） |
 | [`docs/architecture.md`](docs/architecture.md) | 分层、数据流、硬约束、扩展点 |
 | [`docs/migration-map.md`](docs/migration-map.md) | 迁移映射：来源、改动、行为变化、已知限制 |
+| [`docs/perf-scope-cache.md`](docs/perf-scope-cache.md) | B-17 上下文恢复缓存：理由、实测、等价性证明 |
+| [`schemas/report-v1.schema.json`](schemas/report-v1.schema.json) | 输出 JSON 的正式 Schema（程序化消费方以它为准） |
 | [`examples/`](examples) | 示例输入与输出 |
 
 ---

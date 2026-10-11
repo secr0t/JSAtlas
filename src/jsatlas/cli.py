@@ -5,6 +5,8 @@
     python -m jsatlas https://a/x.js https://b/y.js -o report.json
     python -m jsatlas app.js -o out.json --validate
     python -m jsatlas https://x.com/a.js --header "Cookie: session=xxx"
+    python -m jsatlas app.js --mode api           # 只跑 API 链路
+    python -m jsatlas app.js --mode secret        # 只跑密钥链路
 
 无论是单个还是多个目标，输出形态都一样：
 
@@ -15,6 +17,11 @@
 ```
 
 多个资源的结果合并进同一份清单，每条自带 `source`，不会混淆出处。
+
+`--mode` 是给自动化调用方（Agent / 脚本）准备的任务级开关：
+只跑 API、只跑密钥、或全跑。无论哪种模式，输出形态都不变 ——
+永远是 `{"apis": [...], "secrets": [...]}` 两键，不相关的一侧为空列表，
+调用方不需要按模式改解析逻辑。
 
 `params` 只在真的提取到参数时出现；缺失表示"未提取到参数"，
 **不代表该接口确认无参数**（详见 README「`params` 缺失意味着什么」）。
@@ -37,6 +44,7 @@ from jsatlas.output.serializer import to_json
 from jsatlas.output.validator import validate
 from jsatlas.llm import llm_available
 from jsatlas.pipeline.context import AnalysisOptions
+from jsatlas.pipeline.registry import all_analyzers
 from jsatlas.utils.logging import configure_logging
 
 
@@ -50,7 +58,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--out", help="输出 JSON 文件路径；不指定则输出到 stdout")
     parser.add_argument("--indent", type=int, default=2, help="JSON 缩进，0 表示压缩输出")
     parser.add_argument("--analyzers", nargs="*", default=None,
-                        help="只运行指定的分析器（按 name）")
+                        help="只运行指定的分析器（按 name）；显式指定时优先于 --mode")
+    parser.add_argument("--mode", choices=("all", "api", "secret"), default="all",
+                        help="任务级运行模式：all=API+密钥全跑（默认）；"
+                             "api=只跑 API 链路；secret=只跑密钥链路。"
+                             "输出形态不变，不相关一侧为空列表")
     parser.add_argument("--list-analyzers", action="store_true", help="列出已注册的分析器并退出")
     parser.add_argument("--validate", action="store_true",
                         help="输出前做结构 / JSON Schema 校验，失败则退出码非 0")
@@ -74,6 +86,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true", help="输出日志")
     parser.add_argument("--version", action="version", version=f"jsatlas {__version__}")
     return parser
+
+
+# 任务级模式 → 分析器维度。all 不在表里 = 跑全部已注册的。
+# secret 链路（intelligence.upstream_secret）自带行切片，不依赖 surface，
+# 所以"只跑密钥"时跳过 API 链路是安全的，还能省掉整条 AST 上下文恢复的开销。
+_MODE_DIMENSIONS = {
+    "api": ("surface", "parameters", "context"),
+    "secret": ("intelligence",),
+}
+
+
+def _analyzers_for_mode(mode: str) -> Optional[List[str]]:
+    """把运行模式翻译成分析器名单；all 返回 None（跑全部）。
+
+    名单按注册顺序生成（parameters → context → surfaces → intelligence），
+    与全量运行的执行顺序一致，模式切换不改变分析器之间的先后依赖。
+    """
+    dimensions = _MODE_DIMENSIONS.get(mode)
+    if dimensions is None:
+        return None
+    return [a.name for a in all_analyzers() if a.dimension in dimensions]
 
 
 def _build_policy(args: argparse.Namespace) -> FetchPolicy:
@@ -140,8 +173,13 @@ def main(argv: Optional[List[str]] = None) -> int:
               file=sys.stderr)
         return 2
 
+    # --analyzers 是更精确的指定，优先于 --mode 的粗粒度分组
+    analyzers = args.analyzers
+    if analyzers is None:
+        analyzers = _analyzers_for_mode(args.mode)
+
     options = AnalysisOptions(
-        analyzers=args.analyzers,
+        analyzers=analyzers,
         proximity_link_lines=args.proximity_link,
         max_context_targets=args.max_context_targets,
         enable_ai=True,
