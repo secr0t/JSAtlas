@@ -1,0 +1,6 @@
+{
+  "api_key": "sk-ws-H.EXLEYXX.cBc8.MEYCIQD9ks_47dxdhcOxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxQsiddbWI33gJpb1wDxY9nDrryR3",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "models": ["qwen3.7-flash"],
+  "timeout": 60
+}
