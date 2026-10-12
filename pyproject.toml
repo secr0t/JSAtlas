@@ -52,9 +52,10 @@ dev = [
 
 [project.scripts]
 jsatlas = "jsatlas.cli:main"
+jsatlas-mcp = "jsatlas.mcp_server:run"
 
 [tool.setuptools.packages.find]
-where = "src"
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

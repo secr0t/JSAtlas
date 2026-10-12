@@ -385,6 +385,58 @@ from jsatlas.api import (
 
 ---
 
+## 通过 MCP 接入（面向其他 Agent 的标准入口）
+
+如果你的 Agent 支持 MCP（Claude Code、Cline、各类红队 agent 框架都支持），
+**不要拼命令行** —— 直接用 MCP 协议调用，参数结构化、返回即 JSON。
+
+### 启动 MCP server
+
+```bash
+jsatlas-mcp                  # pip install 后（等价于 python -m jsatlas.mcp_server）
+docker run -i --rm --entrypoint python jsatlas -m jsatlas.mcp_server   # Docker 形态
+```
+
+stdio transport，零依赖，日志走 stderr，stdout 只承载 JSON-RPC 帧。
+
+### 客户端配置示例（Claude Code）
+
+```json
+{
+  "mcpServers": {
+    "jsatlas": {
+      "command": "jsatlas-mcp"
+    }
+  }
+}
+```
+
+Docker 形态：
+
+```json
+{
+  "mcpServers": {
+    "jsatlas": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "--entrypoint", "python", "jsatlas", "-m", "jsatlas.mcp_server"]
+    }
+  }
+}
+```
+
+### 暴露的工具
+
+| 工具 | 入参 | 返回 |
+| --- | --- | --- |
+| `analyze_js` | `source`（文件路径或 URL，必填）、`mode`（`all`/`api`/`secret`，默认 `all`）、`validate`（默认 `false`） | `{"apis": [...], "secrets": [...]}`（文本 JSON） |
+| `list_analyzers` | 无 | 已注册分析器清单 `[{name, dimension, description}]` |
+
+`analyze_js` 的 `mode` 语义与 CLI `--mode` 完全一致；`validate=true` 时会在返回文本里
+附加 `_validation` 块（Schema 校验结果）。分析失败时返回 `isError: true` 并携带根因
+（如文件不存在、URL 获取失败、mode 非法），不会返回假空结果。
+
+---
+
 ## 性能与上限哲学
 
 ### 关于体积与耗时
