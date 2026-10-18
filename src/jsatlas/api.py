@@ -116,7 +116,7 @@ def available_analyzers() -> List[Dict[str, Any]]:
 
 
 def report(result: AnalysisResult) -> Dict[str, Any]:
-    """把单个分析结果编译成对外报告 —— `{"apis": [...], "secrets": [...]}`。"""
+    """把单个分析结果编译成对外报告 —— `{"api_with_param": [...], "api_without_param": [...], "secrets": [...]}`。"""
     return build_report(result)
 
 

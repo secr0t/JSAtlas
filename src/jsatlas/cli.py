@@ -11,7 +11,10 @@
 无论是单个还是多个目标，输出形态都一样：
 
 ```json
-{"apis": [{"path": "...", "method": "POST", "params": {...}, "source": "..."}],
+{"api_with_param": [{"path": "/security/api/v1/...", "method": "POST", "params": {...},
+                     "reconstruct": {"envelope_rewrite": {...}, "api_is_exempt": false},
+                     "source": "..."}],
+ "api_without_param": [{"path": "...", "method": "GET", "source": "..."}],
  "secrets": [{"value": "...", "type": "...", "risk_level": "High",
               "test_suggestion": "...", "source": "..."}]}
 ```
@@ -20,11 +23,12 @@
 
 `--mode` 是给自动化调用方（Agent / 脚本）准备的任务级开关：
 只跑 API、只跑密钥、或全跑。无论哪种模式，输出形态都不变 ——
-永远是 `{"apis": [...], "secrets": [...]}` 两键，不相关的一侧为空列表，
-调用方不需要按模式改解析逻辑。
+永远是 `{"api_with_param": [...], "api_without_param": [...], "secrets": [...]}` 三键，
+不相关的一侧为空列表，调用方不需要按模式改解析逻辑。
 
 `params` 只在真的提取到参数时出现；缺失表示"未提取到参数"，
 **不代表该接口确认无参数**（详见 README「`params` 缺失意味着什么」）。
+有 params 的接口进 `api_with_param`，没有的进 `api_without_param`。
 """
 
 from __future__ import annotations
@@ -232,7 +236,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def _summary(data: Dict[str, Any]) -> str:
-    return f"apis={len(data.get('apis', []))}, secrets={len(data.get('secrets', []))}"
+    n_api = len(data.get("api_with_param", [])) + len(data.get("api_without_param", []))
+    return f"apis={n_api}, secrets={len(data.get('secrets', []))}"
 
 
 if __name__ == "__main__":

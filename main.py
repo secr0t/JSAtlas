@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 # ------------------------------------------------------------------ 配置区
-TARGET_JS = "https://cdn1.xdf.cn/cms-ssr-app-node/1-10120e83.js"
+TARGET_JS = "app.b4d04271.js"
 OUTPUT_JSON = "result.json"          # 例如 "result.json"；留空则只打印
 ANALYZERS = None          # 例如 ["surface.path_candidates"]；None 表示跑全部
 # ----------------------------------------------------------------------
@@ -56,7 +56,8 @@ def main() -> int:
         result = analyze_file(str(target), options=options)
 
     data = report(result)
-    print(f"[3/4] 完成   {len(data['apis'])} 个接口 / "
+    n_api = len(data["api_with_param"]) + len(data["api_without_param"])
+    print(f"[3/4] 完成   {n_api} 个接口 / "
           f"{len(data['secrets'])} 条密钥线索，"
           f"耗时 {result.statistics.duration_ms} ms")
 

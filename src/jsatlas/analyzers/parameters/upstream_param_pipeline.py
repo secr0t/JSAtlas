@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import List, Optional
 
 from jsatlas.analyzers.parameters.upstream_params import AISecurityAuditor
@@ -104,9 +105,56 @@ class UpstreamParamAnalyzer(Analyzer):
         owner = self._surface_for(ctx, path)
         params_map = parse_params_string(params_raw)
 
+        # 合并推断参数：inferred_params 注入 params（content 类 JSON 值做结构合并），
+        # 并产出 param_note 标注推断来源；合并后不再单独输出 inferred_params。
+        param_note = None
+        inferred = detail.get("inferred_params")
+        if inferred and isinstance(inferred, dict):
+            params_map = dict(params_map or {})
+            notes = []
+            for key, inval in inferred.items():
+                ival = (
+                    json.dumps(inval, ensure_ascii=False)
+                    if isinstance(inval, (dict, list))
+                    else ("" if inval is None else str(inval))
+                )
+                if key in params_map:
+                    pval = params_map[key]
+                    if (
+                        isinstance(pval, str)
+                        and pval.lstrip().startswith("{")
+                        and isinstance(inval, dict)
+                    ):
+                        try:
+                            pj = json.loads(pval)
+                            if isinstance(pj, dict):
+                                params_map[key] = json.dumps(
+                                    _deep_merge(pj, inval), ensure_ascii=False
+                                )
+                                notes.append(f"{key} 结构已按推断补全")
+                                continue
+                        except Exception:
+                            pass
+                    params_map[key] = ival
+                    notes.append(f"{key} 值由推断生成")
+                else:
+                    params_map[key] = ival
+                    notes.append(f"{key} 为推断字段")
+            param_note = "；".join(notes) + "（推断内容未在代码验证，构造请求时注意）"
+
         # 方法名：上游 Level 3 判出来的更可靠，回填到已存在的 attack surface
         if method and owner is not None and not owner.method:
             owner.method = method
+
+        # 每 API 附加情报：合并后参数 / 最终路径 / 重构上下文（供报告输出，不影响 points）
+        if owner is not None:
+            attrs = owner.attributes
+            rc = detail.get("reconstruct") or {}
+            if rc:
+                attrs["reconstruct"] = rc
+                attrs["final_path"] = rc.get("final_path", path)
+            if param_note:
+                attrs["param_note"] = param_note
 
         already = {p.name for p in ctx.points.values() if p.surface_id == (owner.id if owner else None)}
         for name, value in params_map.items():
@@ -142,6 +190,17 @@ class UpstreamParamAnalyzer(Analyzer):
             if surface.value == path:
                 return surface
         return None
+
+
+def _deep_merge(base: dict, extra: dict) -> dict:
+    """递归合并两个 dict（extra 覆盖 base），用于把推断结构注入已验证的 JSON 参数值。"""
+    out = dict(base)
+    for k, v in extra.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 
 
 def _target_url(ctx) -> str:
