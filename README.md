@@ -484,6 +484,12 @@ JSAtlas **不对源码设任何字符/字节上限**：JScanner2 密钥全链路
 正则那条在真实 bundle 上 43 条命中全是误报，已整体移除（见上）。
 判定逻辑与上游一致，JSAtlas 只在命中之后补类型、风险等级与建议文案。
 
+### 密钥识别算法与来源
+
+JSAtlas 的密钥识别能力沿用上游 JScanner2 的实现：通过**熵与分词特征进行候选评分**，再结合 AST 上下文恢复与 LLM 复核完成判定。相关算法思路与技术细节见[先知社区技术文章](https://xz.aliyun.com/news/91962)。
+
+JSAtlas 对该链路进行了模块化封装，并通过上游一致性测试验证迁移实现；密钥识别逻辑以 JScanner2 的实际实现为准。
+
 `--mode` 与这些维度的对应关系：`api` = surface + parameters + context，
 `secret` = intelligence，`all` = 全部。
 
